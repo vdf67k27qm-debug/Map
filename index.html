@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Grass Stage Editor</title>
+    <title>Grass Stage Editor Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
     <style>
         * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -14,15 +14,13 @@
 <body>
 <script>
 /**
- * 【素材リスト】ハーフ素材は「足場」、それ以外は「地面」として設定
+ * 【素材リスト】
  */
 const ASSET_LIST = [
-    // 地面（通常のブロック）
     { id: 1, key: 'mid',    file: 'grassMid.png',          name: '地面' },
     { id: 2, key: 'center', file: 'grassCenter.png',       name: '土' },
     { id: 3, key: 'cliffL', file: 'grassCliffLeftAlt.png', name: '崖(左)' },
     { id: 4, key: 'cliffR', file: 'grassCliffRightAlt.png',name: '崖(右)' },
-    // 足場（ハーフサイズ：すり抜け用想定）
     { id: 10, key: 'hMid',  file: 'grassHalfMid.png',      name: '足場' },
     { id: 11, key: 'hL',    file: 'grassHalfLeft.png',     name: '足場(左)' },
     { id: 12, key: 'hR',    file: 'grassHalfRight.png',    name: '足場(右)' }
@@ -30,7 +28,7 @@ const ASSET_LIST = [
 
 // --- 基本設定 ---
 let TILE_SIZE = 64;
-let MAP_WIDTH = 80;  // スマブラ戦場を想定した広め設定
+let MAP_WIDTH = 80;
 let MAP_HEIGHT = 45;
 let MAP_DATA = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(0));
 
@@ -54,10 +52,11 @@ function preload() {
     ASSET_LIST.forEach(a => this.load.image(a.key, a.file));
 }
 
-let cam, marker, mapLayer, grid, bgImage, uiContainer, draggedSprite = null;
+// 安全にシーンを参照するためのグローバル変数
+let mainScene, cam, marker, mapLayer, grid, bgImage, uiContainer, draggedSprite = null;
 
 function create() {
-    const scene = this;
+    mainScene = this; // シーンを変数に保存（安定化の要）
     cam = this.cameras.main;
     cam.setZoom(0.5);
 
@@ -66,25 +65,26 @@ function create() {
     mapLayer = this.add.group();
     marker = this.add.graphics().lineStyle(4, 0xffff00, 1).strokeRect(0, 0, TILE_SIZE, TILE_SIZE).setDepth(10);
 
-    updateWorldSize.call(this);
+    updateWorldSize();
     createUI.call(this);
 
     this.input.addPointer(2);
     this.input.addPointer(3);
     setupInteractions.call(this);
 
-    loadFromStorage.call(this);
+    loadFromStorage();
 }
 
 function updateWorldSize() {
+    if (!mainScene) return;
     const worldW = MAP_WIDTH * TILE_SIZE;
     const worldH = MAP_HEIGHT * TILE_SIZE;
-    this.physics.world.setBounds(0, 0, worldW, worldH);
+    mainScene.physics.world.setBounds(0, 0, worldW, worldH);
     cam.setBounds(0, 0, worldW, worldH);
     bgImage.setDisplaySize(worldW, worldH);
     grid.width = worldW;
     grid.height = worldH;
-    if (this.sizeLabel) this.sizeLabel.setText(`${MAP_WIDTH}x${MAP_HEIGHT}`);
+    if (mainScene.sizeLabel) mainScene.sizeLabel.setText(`${MAP_WIDTH}x${MAP_HEIGHT}`);
 }
 
 function setupInteractions() {
@@ -155,14 +155,13 @@ function setupInteractions() {
 }
 
 function createUI() {
-    const scene = this;
     const h = 180;
     uiContainer = this.add.container(0, window.innerHeight - h).setScrollFactor(0).setDepth(1000);
     uiContainer.add(this.add.rectangle(0, 0, window.innerWidth, h, 0x000000, 0.95).setOrigin(0));
 
     // 1. モード選択
     const modes = [{ id: MODES.NAV, l: 'NAV' }, { id: MODES.PLACE, l: 'PLACE' }, { id: MODES.EDIT, l: 'EDIT' }, { id: MODES.DRAG, l: 'DRAG' }];
-    this.modeBtns = [];
+    mainScene.modeBtns = [];
     modes.forEach((m, i) => {
         const x = (window.innerWidth / 4) * (i + 0.5);
         const btn = this.add.container(x, 35).setInteractive(new Phaser.Geom.Rectangle(-50, -25, 100, 50), Phaser.Geom.Rectangle.Contains);
@@ -170,14 +169,14 @@ function createUI() {
         btn.add([bg, this.add.text(0, 0, m.l, {fontWeight:'bold', fontSize:'14px'}).setOrigin(0.5)]);
         btn.on('pointerdown', () => { currentMode = m.id; updateUIState(); });
         uiContainer.add(btn);
-        this.modeBtns.push({ id: m.id, bg });
+        mainScene.modeBtns.push({ id: m.id, bg });
     });
 
-    // 2. 素材パレット（横スクロール対応）
+    // 2. 素材パレット
     const paletteScrollArea = this.add.container(0, 105);
     uiContainer.add(paletteScrollArea);
     
-    this.tileBtns = [];
+    mainScene.tileBtns = [];
     const allTiles = ASSET_LIST.concat({id: 0, key: null, name: '消しゴム'});
     
     allTiles.forEach((t, i) => {
@@ -185,17 +184,15 @@ function createUI() {
         const bg = this.add.rectangle(0, 0, 85, 65, 0x222222).setStrokeStyle(2, 0x444444);
         if (t.key) {
             const img = this.add.image(0, -12, t.key);
-            // ハーフ素材なら少し平たく表示
             t.id >= 10 ? img.setDisplaySize(45, 22) : img.setDisplaySize(40, 40);
             btn.add(img);
         }
         btn.add(this.add.text(0, 20, t.name, {fontSize: '10px'}).setOrigin(0.5));
         btn.on('pointerdown', () => { currentTileID = t.id; if(currentMode!==MODES.PLACE) currentMode=MODES.PLACE; updateUIState(); });
         paletteScrollArea.add(btn);
-        this.tileBtns.push({ id: t.id, bg });
+        mainScene.tileBtns.push({ id: t.id, bg });
     });
 
-    // パレットのドラッグスクロール
     this.input.on('pointermove', (p) => {
         if (p.y > window.innerHeight - 75 && p.isDown) {
             paletteScrollArea.x += p.x - p.prevPosition.x;
@@ -205,10 +202,10 @@ function createUI() {
     });
 
     // 3. 右側操作系
-    this.sizeLabel = this.add.text(window.innerWidth - 10, 80, '', {fontSize:'12px'}).setOrigin(1, 0.5);
+    mainScene.sizeLabel = this.add.text(window.innerWidth - 10, 80, '', {fontSize:'12px'}).setOrigin(1, 0.5);
     const szBtn = (x, y, txt, func) => this.add.text(x, y, txt, {backgroundColor:'#444', padding:5, fontSize:'14px'}).setInteractive().on('pointerdown', func);
     uiContainer.add([
-        this.sizeLabel,
+        mainScene.sizeLabel,
         szBtn(window.innerWidth - 130, 105, 'W-', () => resizeMap(Math.max(5, MAP_WIDTH-5), MAP_HEIGHT)),
         szBtn(window.innerWidth - 90, 105, 'W+', () => resizeMap(MAP_WIDTH+5, MAP_HEIGHT)),
         szBtn(window.innerWidth - 50, 105, 'H-', () => resizeMap(MAP_WIDTH, Math.max(5, MAP_HEIGHT-5))),
@@ -220,8 +217,9 @@ function createUI() {
 }
 
 function updateUIState() {
-    game.scene.scenes[0].modeBtns.forEach(b => b.bg.setFillStyle(b.id === currentMode ? 0x00ffff : 0x333333, b.id === currentMode ? 0.4 : 1));
-    game.scene.scenes[0].tileBtns.forEach(b => b.bg.setStrokeStyle(b.id === currentTileID ? 4 : 2, b.id === currentTileID ? 0xffff00 : 0x444444));
+    if(!mainScene) return;
+    mainScene.modeBtns.forEach(b => b.bg.setFillStyle(b.id === currentMode ? 0x00ffff : 0x333333, b.id === currentMode ? 0.4 : 1));
+    mainScene.tileBtns.forEach(b => b.bg.setStrokeStyle(b.id === currentTileID ? 4 : 2, b.id === currentTileID ? 0xffff00 : 0x444444));
 }
 
 function resizeMap(newW, newH) {
@@ -230,7 +228,7 @@ function resizeMap(newW, newH) {
         for (let c = 0; c < Math.min(MAP_WIDTH, newW); c++) newData[r][c] = MAP_DATA[r][c];
     }
     MAP_DATA = newData; MAP_WIDTH = newW; MAP_HEIGHT = newH;
-    updateWorldSize.call(game.scene.scenes[0]);
+    updateWorldSize();
     renderMap();
 }
 
@@ -242,16 +240,24 @@ function placeTile(tx, ty) {
 }
 
 function renderMap() {
+    if(!mainScene) return;
     mapLayer.clear(true, true);
-    const scene = game.scene.scenes[0];
-    const keyMap = {}; ASSET_LIST.forEach(a => keyMap[a.id] = a.key);
+    
+    const keyMap = {}; 
+    ASSET_LIST.forEach(a => keyMap[a.id] = a.key);
 
     for (let r = 0; r < MAP_HEIGHT; r++) {
         for (let c = 0; c < MAP_WIDTH; c++) {
             const id = MAP_DATA[r][c];
             if (id === 0) continue;
-            const s = scene.add.image(c * TILE_SIZE + TILE_SIZE/2, r * TILE_SIZE + TILE_SIZE/2, keyMap[id]);
-            // ハーフ素材なら高さを半分にして、グリッドの上半分に寄せる
+
+            // 【重要な修正】もしリストに存在しない古いデータなら、強制的に消去する（エラー回避）
+            if (!keyMap[id]) {
+                MAP_DATA[r][c] = 0;
+                continue;
+            }
+
+            const s = mainScene.add.image(c * TILE_SIZE + TILE_SIZE/2, r * TILE_SIZE + TILE_SIZE/2, keyMap[id]);
             if (id >= 10) {
                 s.setDisplaySize(TILE_SIZE, TILE_SIZE/2);
                 s.y -= TILE_SIZE/4;
@@ -282,14 +288,33 @@ function finalizeDrag() {
     MAP_DATA = newData; renderMap();
 }
 
-function saveToStorage() { localStorage.setItem('map_save_grass', JSON.stringify(MAP_DATA)); }
-function loadFromStorage() {
-    const s = localStorage.getItem('map_save_grass');
-    if (s) { MAP_DATA = JSON.parse(s); MAP_WIDTH = MAP_DATA[0].length; MAP_HEIGHT = MAP_DATA.length; updateWorldSize.call(game.scene.scenes[0]); renderMap(); }
+function saveToStorage() { 
+    localStorage.setItem('map_save_grass', JSON.stringify(MAP_DATA)); 
 }
+
+function loadFromStorage() {
+    try {
+        const s = localStorage.getItem('map_save_grass');
+        if (s) { 
+            const parsed = JSON.parse(s);
+            if (parsed && parsed.length > 0) {
+                MAP_DATA = parsed; 
+                MAP_WIDTH = MAP_DATA[0].length; 
+                MAP_HEIGHT = MAP_DATA.length; 
+                updateWorldSize(); 
+                renderMap(); 
+            }
+        }
+    } catch (e) {
+        console.warn("セーブデータが破損していたため、初期化しました", e);
+        localStorage.removeItem('map_save_grass');
+    }
+}
+
 function exportMap() { console.log(JSON.stringify(MAP_DATA)); alert("データを書き出しました"); }
 
 function update() {
+    if(!mainScene) return;
     const wp = this.input.activePointer.positionToCamera(cam);
     marker.x = Math.floor(wp.x / TILE_SIZE) * TILE_SIZE;
     marker.y = Math.floor(wp.y / TILE_SIZE) * TILE_SIZE;
