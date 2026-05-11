@@ -1,1 +1,335 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Dynamic Map Editor Pro</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
+    <style>
+        * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+        body { margin: 0; background: #111; overflow: hidden; touch-action: none; font-family: sans-serif; }
+        canvas { display: block; touch-action: none; }
+    </style>
+</head>
+<body>
+<script>
+// --- 初期設定 ---
+let TILE_SIZE = 64;
+let MAP_WIDTH = 40;  // 初期値
+let MAP_HEIGHT = 15; // 初期値
+let WORLD_W = MAP_WIDTH * TILE_SIZE;
+let WORLD_H = MAP_HEIGHT * TILE_SIZE;
 
+const MODES = { NAV: 0, PLACE: 1, EDIT: 2, DRAG: 3 };
+const TILES = { SOLID: 1, PLAT: 2, DECO: 3 };
+
+let MAP_DATA = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(0));
+let currentMode = MODES.PLACE;
+let currentTileID = TILES.SOLID;
+
+const config = {
+    type: Phaser.AUTO,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: '#000000',
+    scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
+    scene: { preload: preload, create: create, update: update }
+};
+
+const game = new Phaser.Game(config);
+
+function preload() {
+    this.load.image('bg', 'backgroundCastles.png');
+    this.load.image('t1', 'ground_stone.png');
+    this.load.image('t2', 'platform_wood.png');
+    this.load.image('t3', 'flag_red.png');
+}
+
+let cam, marker, mapLayer, grid, bgImage, uiContainer, draggedSprite = null;
+
+function create() {
+    const scene = this;
+    cam = this.cameras.main;
+    cam.setZoom(0.5);
+
+    // 1. 背景 (マップサイズに合わせて変形)
+    bgImage = this.add.image(0, 0, 'bg').setOrigin(0);
+    
+    // 2. グリッド (Depth: 1)
+    grid = this.add.grid(0, 0, 0, 0, TILE_SIZE, TILE_SIZE, 0, 0, 0xffffff, 0.15).setOrigin(0);
+    grid.setDepth(1);
+
+    // 3. マップレイヤー (Depth: 2)
+    mapLayer = this.add.group();
+
+    // 4. マーカー (Depth: 10)
+    marker = this.add.graphics().lineStyle(4, 0xffff00, 1).strokeRect(0, 0, TILE_SIZE, TILE_SIZE).setDepth(10);
+
+    // ワールドサイズ更新
+    updateWorldSize.call(this);
+
+    // UI & 入力
+    createUI.call(this);
+    this.input.addPointer(2);
+    this.input.addPointer(3);
+    setupInteractions.call(this);
+
+    // 自動ロード
+    const saved = localStorage.getItem('phaser_map_save_dynamic');
+    if (saved) {
+        const parsed = JSON.parse(saved);
+        MAP_WIDTH = parsed[0].length;
+        MAP_HEIGHT = parsed.length;
+        MAP_DATA = parsed;
+        updateWorldSize.call(this);
+        renderMap();
+    }
+}
+
+// マップサイズやワールドの大きさを更新する関数
+function updateWorldSize() {
+    WORLD_W = MAP_WIDTH * TILE_SIZE;
+    WORLD_H = MAP_HEIGHT * TILE_SIZE;
+    
+    this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
+    cam.setBounds(0, 0, WORLD_W, WORLD_H);
+    
+    // 背景をマップサイズにぴったり合わせる
+    bgImage.setDisplaySize(WORLD_W, WORLD_H);
+    
+    // グリッドを更新
+    grid.width = WORLD_W;
+    grid.height = WORLD_H;
+    grid.setOrigin(0);
+}
+
+// データの欠損なしにマップサイズを変更する
+function resizeMap(newW, newH) {
+    let newData = Array(newH).fill().map(() => Array(newW).fill(0));
+    for (let r = 0; r < Math.min(MAP_HEIGHT, newH); r++) {
+        for (let c = 0; c < Math.min(MAP_WIDTH, newW); c++) {
+            newData[r][c] = MAP_DATA[r][c];
+        }
+    }
+    MAP_DATA = newData;
+    MAP_WIDTH = newW;
+    MAP_HEIGHT = newH;
+    updateWorldSize.call(game.scene.scenes[0]);
+    renderMap();
+}
+
+function setupInteractions() {
+    let lastPinchDist = 0;
+    let isOverallDragging = false;
+
+    this.input.on('pointermove', (p) => {
+        const p1 = this.input.pointer1;
+        const p2 = this.input.pointer2;
+        const p3 = this.input.pointer3;
+
+        if (p1.isDown && p2.isDown && p3.isDown) {
+            cam.scrollX -= (p.x - p.prevPosition.x) / cam.zoom;
+            cam.scrollY -= (p.y - p.prevPosition.y) / cam.zoom;
+            return;
+        }
+
+        if (p1.isDown && p2.isDown) {
+            let dist = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+            if (lastPinchDist > 0) {
+                let zoomChange = dist / lastPinchDist;
+                cam.setZoom(Phaser.Math.Clamp(cam.zoom * zoomChange, 0.1, 2.0));
+            }
+            lastPinchDist = dist;
+            return;
+        }
+
+        if (p1.isDown && p1.y < window.innerHeight - 180) {
+            const wp = p1.positionToCamera(cam);
+            const tx = Math.floor(wp.x / TILE_SIZE);
+            const ty = Math.floor(wp.y / TILE_SIZE);
+
+            if (currentMode === MODES.PLACE && currentTileID !== null) {
+                placeTile(tx, ty);
+            } else if (currentMode === MODES.EDIT && draggedSprite) {
+                draggedSprite.x = tx * TILE_SIZE + TILE_SIZE/2;
+                draggedSprite.y = ty * TILE_SIZE + TILE_SIZE/2;
+            } else if (currentMode === MODES.DRAG && isOverallDragging) {
+                moveAllTiles((p.x - p.prevPosition.x)/cam.zoom, (p.y - p.prevPosition.y)/cam.zoom);
+            } else if (currentMode === MODES.NAV) {
+                cam.scrollX -= (p.x - p.prevPosition.x) / cam.zoom;
+                cam.scrollY -= (p.y - p.prevPosition.y) / cam.zoom;
+            }
+        }
+    });
+
+    this.input.on('pointerdown', (p) => {
+        if (p.y > window.innerHeight - 180) return;
+        const wp = p.positionToCamera(cam);
+        const tx = Math.floor(wp.x / TILE_SIZE);
+        const ty = Math.floor(wp.y / TILE_SIZE);
+
+        if (currentMode === MODES.EDIT) {
+            draggedSprite = mapLayer.getChildren().find(s => s.tx === tx && s.ty === ty);
+            if (draggedSprite) draggedSprite.setAlpha(0.6);
+        } else if (currentMode === MODES.DRAG) {
+            isOverallDragging = true;
+        } else if (currentMode === MODES.PLACE) {
+            placeTile(tx, ty);
+        }
+    });
+
+    this.input.on('pointerup', () => {
+        lastPinchDist = 0;
+        if (draggedSprite) finalizeEdit();
+        if (isOverallDragging) finalizeDrag();
+        isOverallDragging = false;
+        saveToStorage();
+    });
+}
+
+function createUI() {
+    const scene = this;
+    const h = 180;
+    const uiY = window.innerHeight - h;
+    uiContainer = this.add.container(0, uiY).setScrollFactor(0).setDepth(1000);
+
+    const bar = this.add.rectangle(0, 0, window.innerWidth, h, 0x000000, 0.95).setOrigin(0);
+    uiContainer.add(bar);
+
+    // 1. モードタブ
+    const modes = [{ id: MODES.NAV, label: 'NAV' }, { id: MODES.PLACE, label: 'PLACE' }, { id: MODES.EDIT, label: 'EDIT' }, { id: MODES.DRAG, label: 'DRAG' }];
+    this.modeBtns = [];
+    modes.forEach((m, i) => {
+        const x = (window.innerWidth / 4) * (i + 0.5);
+        const btn = this.add.container(x, 30).setInteractive(new Phaser.Geom.Rectangle(-50, -25, 100, 50), Phaser.Geom.Rectangle.Contains);
+        const bg = this.add.rectangle(0, 0, 80, 40, 0x333333).setStrokeStyle(1, 0x666666);
+        const txt = this.add.text(0, 0, m.label, { fontSize: '14px', fontWeight: 'bold' }).setOrigin(0.5);
+        btn.add([bg, txt]);
+        btn.on('pointerdown', () => setMode(m.id));
+        uiContainer.add(btn);
+        this.modeBtns.push({ id: m.id, bg });
+    });
+
+    // 2. マップサイズ変更コントローラー
+    const sizeUI = this.add.container(window.innerWidth - 150, 90);
+    const sizeLabel = this.add.text(0, -30, `SIZE: ${MAP_WIDTH}x${MAP_HEIGHT}`, {fontSize: '12px'}).setOrigin(1, 0.5);
+    
+    const btnStyle = { fontSize: '18px', backgroundColor: '#444', padding: 5 };
+    const wUp = this.add.text(0, 0, 'W+', btnStyle).setInteractive().on('pointerdown', () => resizeMap(MAP_WIDTH + 5, MAP_HEIGHT));
+    const wDown = this.add.text(-40, 0, 'W-', btnStyle).setInteractive().on('pointerdown', () => resizeMap(Math.max(5, MAP_WIDTH - 5), MAP_HEIGHT));
+    const hUp = this.add.text(45, 0, 'H+', btnStyle).setInteractive().on('pointerdown', () => resizeMap(MAP_WIDTH, MAP_HEIGHT + 5));
+    const hDown = this.add.text(85, 0, 'H-', btnStyle).setInteractive().on('pointerdown', () => resizeMap(MAP_WIDTH, Math.max(5, MAP_HEIGHT - 5)));
+    
+    sizeUI.add([sizeLabel, wUp, wDown, hUp, hDown]);
+    uiContainer.add(sizeUI);
+    this.sizeLabel = sizeLabel;
+
+    // 3. 素材パレット
+    this.palette = this.add.container(0, 100);
+    uiContainer.add(this.palette);
+    const tiles = [{ id: 1, key: 't1', name: '土台' }, { id: 2, key: 't2', name: '足場' }, { id: 3, key: 't3', name: '装飾' }, { id: 0, key: null, name: '消し' }];
+    this.tileBtns = [];
+    tiles.forEach((t, i) => {
+        const x = 60 + (i * 90);
+        const btn = this.add.container(x, 0).setInteractive(new Phaser.Geom.Rectangle(-40, -35, 80, 70), Phaser.Geom.Rectangle.Contains);
+        const bg = this.add.rectangle(0, 0, 75, 60, 0x222222).setStrokeStyle(2, 0x444444);
+        if (t.key) btn.add(this.add.image(0, -10, t.key).setDisplaySize(35, 35));
+        btn.add(this.add.text(0, 18, t.name, { fontSize: '11px' }).setOrigin(0.5));
+        btn.on('pointerdown', () => setTile(t.id));
+        this.palette.add(btn);
+        this.tileBtns.push({ id: t.id, bg });
+    });
+
+    // 4. システムボタン
+    const exportBtn = createActionBtn.call(this, window.innerWidth - 60, 150, 'EXPORT', 0x00aa00, exportMap);
+    uiContainer.add(exportBtn);
+
+    setMode(MODES.PLACE);
+    setTile(1);
+}
+
+function createActionBtn(x, y, label, color, callback) {
+    const btn = this.add.container(x, y).setInteractive(new Phaser.Geom.Rectangle(-40, -20, 80, 40), Phaser.Geom.Rectangle.Contains);
+    btn.add([this.add.rectangle(0, 0, 80, 35, color).setStrokeStyle(1, 0xffffff), this.add.text(0, 0, label, { fontSize: '12px' }).setOrigin(0.5)]);
+    btn.on('pointerdown', callback);
+    return btn;
+}
+
+function setMode(mode) {
+    currentMode = mode;
+    game.scene.scenes[0].modeBtns.forEach(b => {
+        b.bg.setFillStyle(b.id === currentMode ? 0x00ffff : 0x333333, b.id === currentMode ? 0.4 : 1);
+    });
+}
+
+function setTile(id) {
+    currentTileID = id;
+    game.scene.scenes[0].tileBtns.forEach(b => {
+        b.bg.setStrokeStyle(b.id === currentTileID ? 4 : 2, b.id === currentTileID ? 0xffff00 : 0x444444);
+    });
+}
+
+function placeTile(tx, ty) {
+    if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT) {
+        MAP_DATA[ty][tx] = currentTileID;
+        renderMap();
+    }
+}
+
+function renderMap() {
+    mapLayer.clear(true, true);
+    const scene = game.scene.scenes[0];
+    const keys = { 1: 't1', 2: 't2', 3: 't3' };
+    for (let r = 0; r < MAP_HEIGHT; r++) {
+        for (let c = 0; c < MAP_WIDTH; c++) {
+            const id = MAP_DATA[r][c];
+            if (id === 0) continue;
+            const s = scene.add.image(c * TILE_SIZE + TILE_SIZE/2, r * TILE_SIZE + TILE_SIZE/2, keys[id]);
+            s.setDisplaySize(TILE_SIZE, TILE_SIZE);
+            s.tx = c; s.ty = r; s.tileId = id; s.setDepth(2);
+            mapLayer.add(s);
+        }
+    }
+    if (scene.sizeLabel) scene.sizeLabel.setText(`SIZE: ${MAP_WIDTH}x${MAP_HEIGHT}`);
+}
+
+function finalizeEdit() {
+    const ntx = Phaser.Math.Clamp(Math.floor(draggedSprite.x / TILE_SIZE), 0, MAP_WIDTH-1);
+    const nty = Phaser.Math.Clamp(Math.floor(draggedSprite.y / TILE_SIZE), 0, MAP_HEIGHT-1);
+    MAP_DATA[draggedSprite.ty][draggedSprite.tx] = 0;
+    MAP_DATA[nty][ntx] = draggedSprite.tileId;
+    draggedSprite = null;
+    renderMap();
+}
+
+function moveAllTiles(dx, dy) {
+    mapLayer.getChildren().forEach(s => { s.x += dx; s.y += dy; });
+}
+
+function finalizeDrag() {
+    const newData = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(0));
+    mapLayer.getChildren().forEach(s => {
+        const ntx = Phaser.Math.Clamp(Math.floor(s.x / TILE_SIZE), 0, MAP_WIDTH-1);
+        const nty = Phaser.Math.Clamp(Math.floor(s.y / TILE_SIZE), 0, MAP_HEIGHT-1);
+        newData[nty][ntx] = s.tileId;
+    });
+    MAP_DATA = newData;
+    renderMap();
+}
+
+function saveToStorage() { localStorage.setItem('phaser_map_save_dynamic', JSON.stringify(MAP_DATA)); }
+
+function exportMap() {
+    console.log(JSON.stringify(MAP_DATA));
+    alert("コンソールに出力しました。GitHubのコードへ貼り付けてください。");
+}
+
+function update() {
+    const wp = this.input.activePointer.positionToCamera(cam);
+    marker.x = Math.floor(wp.x / TILE_SIZE) * TILE_SIZE;
+    marker.y = Math.floor(wp.y / TILE_SIZE) * TILE_SIZE;
+    marker.visible = (currentMode === MODES.PLACE && wp.y < window.innerHeight - 180);
+}
+</script>
+</body>
+</html>
