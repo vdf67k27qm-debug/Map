@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Simplified Pro Map Editor</title>
+    <title>Grass Stage Editor</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
     <style>
         * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -14,20 +14,24 @@
 <body>
 <script>
 /**
- * 【ここを編集するだけで素材が増える！】
- * id: 重複しない数字, key: 内部管理用, file: 画像ファイル名, name: ボタンに表示する名前
+ * 【素材リスト】ハーフ素材は「足場」、それ以外は「地面」として設定
  */
 const ASSET_LIST = [
-    { id: 1, key: 't1', file: 'ground_stone.png',  name: '土台' },
-    { id: 2, key: 't2', file: 'platform_wood.png', name: '足場' },
-    { id: 3, key: 't3', file: 'flag_red.png',      name: '装飾' },
-    // 素材を増やしたい時はここに追記するだけ！
+    // 地面（通常のブロック）
+    { id: 1, key: 'mid',    file: 'grassMid.png',          name: '地面' },
+    { id: 2, key: 'center', file: 'grassCenter.png',       name: '土' },
+    { id: 3, key: 'cliffL', file: 'grassCliffLeftAlt.png', name: '崖(左)' },
+    { id: 4, key: 'cliffR', file: 'grassCliffRightAlt.png',name: '崖(右)' },
+    // 足場（ハーフサイズ：すり抜け用想定）
+    { id: 10, key: 'hMid',  file: 'grassHalfMid.png',      name: '足場' },
+    { id: 11, key: 'hL',    file: 'grassHalfLeft.png',     name: '足場(左)' },
+    { id: 12, key: 'hR',    file: 'grassHalfRight.png',    name: '足場(右)' }
 ];
 
 // --- 基本設定 ---
 let TILE_SIZE = 64;
-let MAP_WIDTH = 40;
-let MAP_HEIGHT = 30;
+let MAP_WIDTH = 80;  // スマブラ戦場を想定した広め設定
+let MAP_HEIGHT = 45;
 let MAP_DATA = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(0));
 
 const MODES = { NAV: 0, PLACE: 1, EDIT: 2, DRAG: 3 };
@@ -47,7 +51,6 @@ const game = new Phaser.Game(config);
 
 function preload() {
     this.load.image('bg', 'backgroundCastles.png');
-    // リストに基づいて自動ロード
     ASSET_LIST.forEach(a => this.load.image(a.key, a.file));
 }
 
@@ -58,7 +61,6 @@ function create() {
     cam = this.cameras.main;
     cam.setZoom(0.5);
 
-    // 背景とグリッドの初期化
     bgImage = this.add.image(0, 0, 'bg').setOrigin(0);
     grid = this.add.grid(0, 0, 0, 0, TILE_SIZE, TILE_SIZE, 0, 0, 0xffffff, 0.15).setOrigin(0).setDepth(1);
     mapLayer = this.add.group();
@@ -67,12 +69,10 @@ function create() {
     updateWorldSize.call(this);
     createUI.call(this);
 
-    // タッチ入力設定
-    this.input.addPointer(2); // 二本指
-    this.input.addPointer(3); // 三本指
+    this.input.addPointer(2);
+    this.input.addPointer(3);
     setupInteractions.call(this);
 
-    // ロード実行
     loadFromStorage.call(this);
 }
 
@@ -81,10 +81,10 @@ function updateWorldSize() {
     const worldH = MAP_HEIGHT * TILE_SIZE;
     this.physics.world.setBounds(0, 0, worldW, worldH);
     cam.setBounds(0, 0, worldW, worldH);
-    bgImage.setDisplaySize(worldW, worldH); // 背景をマップにフィット
+    bgImage.setDisplaySize(worldW, worldH);
     grid.width = worldW;
     grid.height = worldH;
-    if (this.sizeLabel) this.sizeLabel.setText(`SIZE: ${MAP_WIDTH}x${MAP_HEIGHT}`);
+    if (this.sizeLabel) this.sizeLabel.setText(`${MAP_WIDTH}x${MAP_HEIGHT}`);
 }
 
 function setupInteractions() {
@@ -96,20 +96,17 @@ function setupInteractions() {
         const p2 = this.input.pointer2;
         const p3 = this.input.pointer3;
 
-        // 三本指：カメラ移動
         if (p1.isDown && p2.isDown && p3.isDown) {
             cam.scrollX -= (p.x - p.prevPosition.x) / cam.zoom;
             cam.scrollY -= (p.y - p.prevPosition.y) / cam.zoom;
             return;
         }
-        // 二本指：ズーム
         if (p1.isDown && p2.isDown) {
             let dist = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
             if (lastPinchDist > 0) cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dist / lastPinchDist), 0.1, 2.0));
             lastPinchDist = dist;
             return;
         }
-        // 一本指（UI以外）
         if (p1.isDown && p1.y < window.innerHeight - 180) {
             const wp = p1.positionToCamera(cam);
             const tx = Math.floor(wp.x / TILE_SIZE);
@@ -161,45 +158,62 @@ function createUI() {
     const scene = this;
     const h = 180;
     uiContainer = this.add.container(0, window.innerHeight - h).setScrollFactor(0).setDepth(1000);
-    uiContainer.add(this.add.rectangle(0, 0, window.innerWidth, h, 0x000000, 0.9).setOrigin(0));
+    uiContainer.add(this.add.rectangle(0, 0, window.innerWidth, h, 0x000000, 0.95).setOrigin(0));
 
-    // 1. モードボタン (上段)
+    // 1. モード選択
     const modes = [{ id: MODES.NAV, l: 'NAV' }, { id: MODES.PLACE, l: 'PLACE' }, { id: MODES.EDIT, l: 'EDIT' }, { id: MODES.DRAG, l: 'DRAG' }];
     this.modeBtns = [];
     modes.forEach((m, i) => {
         const x = (window.innerWidth / 4) * (i + 0.5);
         const btn = this.add.container(x, 35).setInteractive(new Phaser.Geom.Rectangle(-50, -25, 100, 50), Phaser.Geom.Rectangle.Contains);
         const bg = this.add.rectangle(0, 0, 85, 45, 0x333333).setStrokeStyle(1, 0x666666);
-        btn.add([bg, this.add.text(0, 0, m.l, {fontWeight:'bold'}).setOrigin(0.5)]);
+        btn.add([bg, this.add.text(0, 0, m.l, {fontWeight:'bold', fontSize:'14px'}).setOrigin(0.5)]);
         btn.on('pointerdown', () => { currentMode = m.id; updateUIState(); });
         uiContainer.add(btn);
         this.modeBtns.push({ id: m.id, bg });
     });
 
-    // 2. 素材ボタン (中段) - 自動ループ作成
-    const palette = this.add.container(0, 105);
+    // 2. 素材パレット（横スクロール対応）
+    const paletteScrollArea = this.add.container(0, 105);
+    uiContainer.add(paletteScrollArea);
+    
     this.tileBtns = [];
-    ASSET_LIST.concat({id: 0, key: null, name: '消し'}).forEach((t, i) => {
-        const btn = this.add.container(60 + (i * 90), 0).setInteractive(new Phaser.Geom.Rectangle(-40, -35, 80, 70), Phaser.Geom.Rectangle.Contains);
-        const bg = this.add.rectangle(0, 0, 80, 65, 0x222222).setStrokeStyle(2, 0x444444);
-        if (t.key) btn.add(this.add.image(0, -12, t.key).setDisplaySize(40, 40));
-        btn.add(this.add.text(0, 20, t.name, {fontSize: '12px'}).setOrigin(0.5));
+    const allTiles = ASSET_LIST.concat({id: 0, key: null, name: '消しゴム'});
+    
+    allTiles.forEach((t, i) => {
+        const btn = this.add.container(60 + (i * 95), 0).setInteractive(new Phaser.Geom.Rectangle(-45, -35, 90, 70), Phaser.Geom.Rectangle.Contains);
+        const bg = this.add.rectangle(0, 0, 85, 65, 0x222222).setStrokeStyle(2, 0x444444);
+        if (t.key) {
+            const img = this.add.image(0, -12, t.key);
+            // ハーフ素材なら少し平たく表示
+            t.id >= 10 ? img.setDisplaySize(45, 22) : img.setDisplaySize(40, 40);
+            btn.add(img);
+        }
+        btn.add(this.add.text(0, 20, t.name, {fontSize: '10px'}).setOrigin(0.5));
         btn.on('pointerdown', () => { currentTileID = t.id; if(currentMode!==MODES.PLACE) currentMode=MODES.PLACE; updateUIState(); });
-        palette.add(btn);
+        paletteScrollArea.add(btn);
         this.tileBtns.push({ id: t.id, bg });
-        uiContainer.add(palette);
     });
 
-    // 3. サイズ・出力 (右下)
-    this.sizeLabel = this.add.text(window.innerWidth - 20, 80, '', {fontSize:'14px'}).setOrigin(1, 0.5);
-    const szBtn = (x, y, txt, func) => this.add.text(x, y, txt, {backgroundColor:'#444', padding:5}).setInteractive().on('pointerdown', func);
+    // パレットのドラッグスクロール
+    this.input.on('pointermove', (p) => {
+        if (p.y > window.innerHeight - 75 && p.isDown) {
+            paletteScrollArea.x += p.x - p.prevPosition.x;
+            const minX = window.innerWidth - (allTiles.length * 95) - 50;
+            paletteScrollArea.x = Phaser.Math.Clamp(paletteScrollArea.x, minX < 0 ? minX : 0, 0);
+        }
+    });
+
+    // 3. 右側操作系
+    this.sizeLabel = this.add.text(window.innerWidth - 10, 80, '', {fontSize:'12px'}).setOrigin(1, 0.5);
+    const szBtn = (x, y, txt, func) => this.add.text(x, y, txt, {backgroundColor:'#444', padding:5, fontSize:'14px'}).setInteractive().on('pointerdown', func);
     uiContainer.add([
         this.sizeLabel,
         szBtn(window.innerWidth - 130, 105, 'W-', () => resizeMap(Math.max(5, MAP_WIDTH-5), MAP_HEIGHT)),
         szBtn(window.innerWidth - 90, 105, 'W+', () => resizeMap(MAP_WIDTH+5, MAP_HEIGHT)),
         szBtn(window.innerWidth - 50, 105, 'H-', () => resizeMap(MAP_WIDTH, Math.max(5, MAP_HEIGHT-5))),
         szBtn(window.innerWidth - 50, 70, 'H+', () => resizeMap(MAP_WIDTH, MAP_HEIGHT+5)),
-        this.add.text(window.innerWidth - 80, 145, 'EXPORT', {backgroundColor:'#008800', padding:8}).setInteractive().on('pointerdown', exportMap)
+        this.add.text(window.innerWidth - 80, 145, 'EXPORT', {backgroundColor:'#008800', padding:8, fontWeight:'bold'}).setInteractive().on('pointerdown', exportMap)
     ]);
 
     updateUIState();
@@ -237,7 +251,13 @@ function renderMap() {
             const id = MAP_DATA[r][c];
             if (id === 0) continue;
             const s = scene.add.image(c * TILE_SIZE + TILE_SIZE/2, r * TILE_SIZE + TILE_SIZE/2, keyMap[id]);
-            s.setDisplaySize(TILE_SIZE, TILE_SIZE);
+            // ハーフ素材なら高さを半分にして、グリッドの上半分に寄せる
+            if (id >= 10) {
+                s.setDisplaySize(TILE_SIZE, TILE_SIZE/2);
+                s.y -= TILE_SIZE/4;
+            } else {
+                s.setDisplaySize(TILE_SIZE, TILE_SIZE);
+            }
             s.tx = c; s.ty = r; s.tileId = id; s.setDepth(2);
             mapLayer.add(s);
         }
@@ -262,12 +282,12 @@ function finalizeDrag() {
     MAP_DATA = newData; renderMap();
 }
 
-function saveToStorage() { localStorage.setItem('map_save_v2', JSON.stringify(MAP_DATA)); }
+function saveToStorage() { localStorage.setItem('map_save_grass', JSON.stringify(MAP_DATA)); }
 function loadFromStorage() {
-    const s = localStorage.getItem('map_save_v2');
+    const s = localStorage.getItem('map_save_grass');
     if (s) { MAP_DATA = JSON.parse(s); MAP_WIDTH = MAP_DATA[0].length; MAP_HEIGHT = MAP_DATA.length; updateWorldSize.call(game.scene.scenes[0]); renderMap(); }
 }
-function exportMap() { console.log(JSON.stringify(MAP_DATA)); alert("JSONを出力しました"); }
+function exportMap() { console.log(JSON.stringify(MAP_DATA)); alert("データを書き出しました"); }
 
 function update() {
     const wp = this.input.activePointer.positionToCamera(cam);
